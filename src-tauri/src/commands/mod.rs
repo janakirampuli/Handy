@@ -4,14 +4,49 @@ pub mod models;
 pub mod transcription;
 
 use crate::settings::{get_settings, write_settings, AppSettings, LogLevel};
+use crate::tray::{change_tray_icon, TrayIconState};
 use crate::utils::cancel_current_operation;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
+
+/// How long to wait after hiding the edit overlay before injecting the paste
+/// keystroke, so the OS has handed focus back to the target app.
+const EDIT_PASTE_REFOCUS_DELAY_MS: u64 = 150;
 
 #[tauri::command]
 #[specta::specta]
 pub fn cancel_operation(app: AppHandle) {
     cancel_current_operation(&app);
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn paste_edited_transcript(app: AppHandle, text: String) -> Result<(), String> {
+    crate::overlay::conclude_edit_overlay(&app);
+    change_tray_icon(&app, TrayIconState::Idle);
+    if text.is_empty() {
+        return Ok(());
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(
+            EDIT_PASTE_REFOCUS_DELAY_MS,
+        ));
+        let app_clone = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Err(e) = crate::utils::paste(text, app_clone.clone()) {
+                log::error!("Failed to paste edited transcript: {}", e);
+                let _ = app_clone.emit("paste-error", ());
+            }
+        });
+    });
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn dismiss_edit_overlay(app: AppHandle) {
+    crate::overlay::conclude_edit_overlay(&app);
+    change_tray_icon(&app, TrayIconState::Idle);
 }
 
 #[tauri::command]

@@ -347,6 +347,10 @@
           "ctrlEnter": "Ctrl+Enter"
         }
       },
+      "editBeforePaste": {
+        "label": "Edit Before Paste",
+        "description": "Review the transcript in the overlay before it is pasted. Enter pastes, Escape discards, and pressing the transcribe shortcut again dictates more text into the editor at the cursor."
+      },
       "translateToEnglish": {
         "label": "Translate to English",
         "description": "Automatically translate speech from other languages to English during transcription."
@@ -671,7 +675,13 @@
   },
   "overlay": {
     "transcribing": "Transcribing...",
-    "processing": "Processing..."
+    "processing": "Processing...",
+    "edit": {
+      "ariaLabel": "Edit transcript",
+      "hint": "Enter pastes · Esc discards",
+      "discard": "Discard",
+      "paste": "Paste"
+    }
   },
   "secureInput": {
     "blockedWithCulprit_one": "{{name}} may be blocking 1 shortcut",

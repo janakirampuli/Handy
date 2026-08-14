@@ -460,3 +460,94 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ============================================================
+   Edit panel (edit-before-paste) — the same card, opened to the Live panel
+   width, holding a real textarea plus a discard/paste action bar.
+   ============================================================ */
+.scard.editing {
+  /* No pop-in: the editor reads as the live panel switching into edit mode,
+     not as a new card. */
+  animation: none;
+  width: var(--ov-open-w);
+  border-radius: 16px;
+}
+/* The editor keeps its natural order (text above actions) even on a top
+   overlay — the column-reverse flip only serves the Live text flow. */
+.ov-stage.top .scard.editing {
+  flex-direction: column;
+}
+.sedit {
+  width: 100%;
+  box-sizing: border-box;
+  height: 118px;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--color-text);
+  font-family: var(--s-font);
+  font-size: 14px;
+  line-height: 1.4;
+  padding: 12px 14px 8px;
+  scrollbar-width: none;
+}
+.sedit::-webkit-scrollbar {
+  display: none;
+}
+.sedit-bar {
+  height: var(--ov-base-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 10px 0 14px;
+  border-top: 1px solid var(--s-hair);
+}
+.sedit-hint {
+  font-size: 11px;
+  color: var(--s-faint);
+  white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sedit-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.sedit-btn {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 13px;
+  border: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  font-size: 12px;
+  font-family: var(--s-font);
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 100ms ease;
+}
+.sedit-btn:active {
+  transform: scale(0.97);
+}
+.sedit-btn.ghost {
+  background: var(--s-hair);
+  color: var(--s-muted);
+}
+.sedit-btn.ghost:hover {
+  background: var(--s-accent-soft);
+  color: var(--color-text);
+}
+.sedit-btn.primary {
+  background: var(--s-accent);
+  color: var(--color-background);
+}
+.sedit-btn.primary:hover {
+  filter: brightness(1.05);
+}

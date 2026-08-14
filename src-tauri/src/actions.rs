@@ -809,6 +809,15 @@ impl ShortcutAction for TranscribeAction {
                             if processed.final_text.is_empty() {
                                 utils::hide_recording_overlay(&ah);
                                 change_tray_icon(&ah, TrayIconState::Idle);
+                            } else if (get_settings(&ah).edit_before_paste
+                                || utils::edit_session_active())
+                                && utils::overlay_window_available(&ah)
+                            {
+                                // Review/edit in the overlay instead of pasting;
+                                // paste_edited_transcript / dismiss_edit_overlay
+                                // finish the flow from there.
+                                utils::show_edit_overlay(&ah, &processed.final_text);
+                                change_tray_icon(&ah, TrayIconState::Idle);
                             } else {
                                 let ah_clone = ah.clone();
                                 let paste_time = Instant::now();

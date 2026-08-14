@@ -27,7 +27,10 @@ use std::env;
 tauri_panel! {
     panel!(RecordingOverlayPanel {
         config: {
-            can_become_key_window: false,
+            // Key window must be allowed so the "editing" state can type into
+            // the transcript box. becomes_key_only_if_needed (set at build)
+            // keeps every other state from stealing keyboard focus.
+            can_become_key_window: true,
             is_floating_panel: true
         }
     })
@@ -50,12 +53,16 @@ const OVERLAY_HEIGHT: f64 = 46.0;
 const OVERLAY_STREAM_WIDTH: f64 = 400.0;
 const OVERLAY_STREAM_HEIGHT: f64 = 120.0;
 
+// Edit panel: same width as the Live panel, taller for the textarea + actions.
+const OVERLAY_EDIT_WIDTH: f64 = 400.0;
+const OVERLAY_EDIT_HEIGHT: f64 = 200.0;
+
 /// Overlay window size (logical) for a given UI state.
 fn overlay_dimensions(state: &str) -> (f64, f64) {
-    if state == "streaming" {
-        (OVERLAY_STREAM_WIDTH, OVERLAY_STREAM_HEIGHT)
-    } else {
-        (OVERLAY_WIDTH, OVERLAY_HEIGHT)
+    match state {
+        "streaming" => (OVERLAY_STREAM_WIDTH, OVERLAY_STREAM_HEIGHT),
+        "editing" => (OVERLAY_EDIT_WIDTH, OVERLAY_EDIT_HEIGHT),
+        _ => (OVERLAY_WIDTH, OVERLAY_HEIGHT),
     }
 }
 
@@ -460,6 +467,7 @@ pub fn create_recording_overlay(app_handle: &AppHandle) {
             .no_activate(true)
             .corner_radius(0.0)
             .style_mask(StyleMask::empty().borderless().nonactivating_panel())
+            .becomes_key_only_if_needed(true)
             .with_window(|w| w.decorations(false).transparent(true).focusable(false))
             .collection_behavior(
                 CollectionBehavior::new()
@@ -501,6 +509,12 @@ fn show_overlay_state(app_handle: &AppHandle, state: &str) {
 }
 
 fn show_overlay_state_on_main(app_handle: &AppHandle, state: &str) {
+    // Only the editor may hold keyboard focus; every other state releases it
+    // so the overlay never steals keystrokes from the app being dictated into.
+    if state != "editing" {
+        set_overlay_keyboard_focus(app_handle, false);
+    }
+
     // Size the overlay for this state (compact vs. streaming), then position it.
     let (width, height) = overlay_dimensions(state);
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
@@ -614,6 +628,116 @@ pub fn show_transcribing_overlay(app_handle: &AppHandle) {
     show_overlay_state(app_handle, "transcribing");
 }
 
+/// True while the transcript editor is open (edit-before-paste). Teardown
+/// paths use this to return to the editor instead of hiding it, so a
+/// cancelled or failed re-dictation never discards the user's edits.
+static EDIT_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+pub fn edit_session_active() -> bool {
+    EDIT_SESSION_ACTIVE.load(Ordering::SeqCst)
+}
+
+/// Whether the overlay window exists; the edit-before-paste path falls back
+/// to a direct paste when it doesn't.
+pub fn overlay_window_available(app_handle: &AppHandle) -> bool {
+    app_handle.get_webview_window("recording_overlay").is_some()
+}
+
+/// Shows the overlay as an editable transcript box and gives it keyboard
+/// focus. Not gated on overlay_style: the user opted into editing, so the
+/// overlay acts as the editor rather than a passive indicator. The frontend
+/// seeds a new editor with `text`, or inserts it at the caret when an edit
+/// session is already open (re-dictation).
+pub fn show_edit_overlay(app_handle: &AppHandle, text: &str) {
+    EDIT_SESSION_ACTIVE.store(true, Ordering::SeqCst);
+    let handle = app_handle.clone();
+    let text = text.to_string();
+    let _ = app_handle.run_on_main_thread(move || {
+        // Deliver the text before the state change so the frontend has it by
+        // the time it renders the editor.
+        if let Some(overlay_window) = handle.get_webview_window("recording_overlay") {
+            let _ = overlay_window.emit("edit-transcript", &text);
+        }
+        show_overlay_state_on_main(&handle, "editing");
+        set_overlay_keyboard_focus(&handle, true);
+    });
+}
+
+/// Re-opens the editor for the already-active session without emitting text
+/// (the frontend still holds the buffer).
+fn reshow_edit_overlay(app_handle: &AppHandle) {
+    let handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        show_overlay_state_on_main(&handle, "editing");
+        set_overlay_keyboard_focus(&handle, true);
+    });
+}
+
+/// Ends the edit session and hides the overlay immediately (no fade-out
+/// delay), releasing keyboard focus so a following paste keystroke reaches
+/// the target app.
+pub fn conclude_edit_overlay(app_handle: &AppHandle) {
+    EDIT_SESSION_ACTIVE.store(false, Ordering::SeqCst);
+    let handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        set_overlay_keyboard_focus(&handle, false);
+        if let Some(overlay_window) = handle.get_webview_window("recording_overlay") {
+            let _ = overlay_window.emit("hide-overlay", ());
+            let _ = overlay_window.hide();
+        }
+    });
+}
+
+/// Grants or releases keyboard focus on the overlay window.
+fn set_overlay_keyboard_focus(app_handle: &AppHandle, focused: bool) {
+    // Focus mutation touches native window state, so run it on the main
+    // thread (inline when already there) — see show_overlay_state.
+    let handle = app_handle.clone();
+    let _ =
+        app_handle.run_on_main_thread(move || set_overlay_keyboard_focus_on_main(&handle, focused));
+}
+
+/// The nonactivating panel takes key without activating Handy, so the target
+/// app stays frontmost and regains key when the panel resigns or hides.
+#[cfg(target_os = "macos")]
+fn set_overlay_keyboard_focus_on_main(app_handle: &AppHandle, focused: bool) {
+    use tauri_nspanel::ManagerExt;
+
+    if let Ok(panel) = app_handle.get_webview_panel("recording_overlay") {
+        if focused {
+            panel.show_and_make_key();
+        } else {
+            panel.resign_key_window();
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_overlay_keyboard_focus_on_main(app_handle: &AppHandle, focused: bool) {
+    if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {
+        #[cfg(target_os = "linux")]
+        if LAYER_SHELL_ACTIVE.load(Ordering::SeqCst) {
+            match overlay_window.gtk_window() {
+                Ok(gtk_window) => gtk_window.set_keyboard_mode(if focused {
+                    KeyboardMode::OnDemand
+                } else {
+                    KeyboardMode::None
+                }),
+                Err(error) => log::error!("Failed to access GTK overlay window: {error}"),
+            }
+            if focused {
+                let _ = overlay_window.set_focus();
+            }
+            return;
+        }
+
+        let _ = overlay_window.set_focusable(focused);
+        if focused {
+            let _ = overlay_window.set_focus();
+        }
+    }
+}
+
 /// Shows the processing overlay window
 pub fn show_processing_overlay(app_handle: &AppHandle) {
     show_overlay_state(app_handle, "processing");
@@ -668,6 +792,16 @@ fn update_overlay_position_on_main(app_handle: &AppHandle) {
 
 /// Hides the recording overlay window with fade-out animation
 pub fn hide_recording_overlay(app_handle: &AppHandle) {
+    // An active edit session outlives recording teardown: a cancelled, empty
+    // or failed re-dictation returns to the editor instead of closing it.
+    // Only conclude_edit_overlay (paste/discard) ends the session.
+    if edit_session_active() {
+        reshow_edit_overlay(app_handle);
+        return;
+    }
+
+    set_overlay_keyboard_focus(app_handle, false);
+
     // Always hide the overlay regardless of settings - if setting was changed while recording,
     // we still want to hide it properly
     if let Some(overlay_window) = app_handle.get_webview_window("recording_overlay") {

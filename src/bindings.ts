@@ -343,6 +343,14 @@ async changeAppendTrailingSpaceSetting(enabled: boolean) : Promise<Result<null, 
     else return { status: "error", error: e  as any };
 }
 },
+async changeEditBeforePasteSetting(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_edit_before_paste_setting", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeLazyStreamCloseSetting(enabled: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_lazy_stream_close_setting", { enabled }) };
@@ -513,6 +521,17 @@ async showMainWindowCommand() : Promise<Result<null, string>> {
 },
 async cancelOperation() : Promise<void> {
     await TAURI_INVOKE("cancel_operation");
+},
+async pasteEditedTranscript(text: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("paste_edited_transcript", { text }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async dismissEditOverlay() : Promise<void> {
+    await TAURI_INVOKE("dismiss_edit_overlay");
 },
 async isPortable() : Promise<boolean> {
     return await TAURI_INVOKE("is_portable");
@@ -965,7 +984,11 @@ reliable_paste?: boolean; typing_tool?: TypingTool; external_script_path?: strin
  * not gated on this — that follows model capability. Migrated from the old
  * `overlay_position` (position `none` → style `None`).
  */
-overlay_style?: OverlayStyle }
+overlay_style?: OverlayStyle;
+/**
+ * Review/edit the transcript in the overlay before it is pasted.
+ */
+edit_before_paste?: boolean }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }

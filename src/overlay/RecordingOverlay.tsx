@@ -12,7 +12,25 @@ import type {
 import i18n, { syncLanguageFromSettings } from "@/i18n";
 import { getLanguageDirection } from "@/lib/utils/rtl";
 
-type OverlayState = "recording" | "streaming" | "transcribing" | "processing";
+type OverlayState =
+  | "recording"
+  | "streaming"
+  | "transcribing"
+  | "processing"
+  | "editing";
+
+// Insert newly dictated text at the caret, adding separator spaces so it
+// doesn't fuse with the surrounding words. The caret ends after the insert.
+const insertDictation = (existing: string, incoming: string, caret: number) => {
+  const before = existing.slice(0, caret);
+  const after = existing.slice(caret);
+  const lead = before && !/\s$/.test(before) ? " " : "";
+  const trail = after && !/^\s/.test(after) ? " " : "";
+  return {
+    text: before + lead + incoming + trail + after,
+    caret: caret + lead.length + incoming.length,
+  };
+};
 
 // Number of reactive bars in the waveform (the simple, smoothed style shared by
 // every overlay form). Mic levels arrive as 16 FFT buckets; we take the first N.
@@ -50,6 +68,15 @@ const RecordingOverlay: React.FC = () => {
   // until they scroll back down.
   const capRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
+  // Edit-before-paste buffer. The refs mirror React state so the backend's
+  // edit-transcript events (which may arrive while the editor is unmounted
+  // during a re-dictation) can merge against the current text and caret.
+  const [editText, setEditText] = useState("");
+  const editRef = useRef<HTMLTextAreaElement>(null);
+  const editTextRef = useRef("");
+  const editCaretRef = useRef(0);
+  const editSessionRef = useRef(false);
+  const editSubmitRef = useRef(false);
   const direction = getLanguageDirection(i18n.language);
 
   useEffect(() => {
@@ -133,6 +160,75 @@ const RecordingOverlay: React.FC = () => {
 
     setupEventListeners();
   }, []);
+
+  // Edit-before-paste events, registered with real cleanup: the merge handler
+  // is not idempotent, so StrictMode's double mount must not duplicate it.
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+    const register = (promise: Promise<() => void>) => {
+      promise.then((unlisten) => {
+        if (disposed) unlisten();
+        else unlisteners.push(unlisten);
+      });
+    };
+
+    // Seed a fresh editor, or insert at the caret when the session is already
+    // open (the user pressed the shortcut again to dictate more).
+    register(
+      listen<string>("edit-transcript", (event) => {
+        const incoming = event.payload;
+        if (editSessionRef.current) {
+          const caret = Math.min(
+            editCaretRef.current,
+            editTextRef.current.length,
+          );
+          const merged = insertDictation(editTextRef.current, incoming, caret);
+          editTextRef.current = merged.text;
+          editCaretRef.current = merged.caret;
+        } else {
+          editSessionRef.current = true;
+          editTextRef.current = incoming;
+          editCaretRef.current = incoming.length;
+        }
+        editSubmitRef.current = false;
+        setEditText(editTextRef.current);
+      }),
+    );
+
+    // The backend only hides while no session is active (or after it ended),
+    // so a hide is the signal to drop the buffer.
+    register(
+      listen("hide-overlay", () => {
+        editSessionRef.current = false;
+        editTextRef.current = "";
+        editCaretRef.current = 0;
+        setEditText("");
+      }),
+    );
+
+    return () => {
+      disposed = true;
+      unlisteners.forEach((unlisten) => unlisten());
+    };
+  }, []);
+
+  // Focus the editor and place the caret once the editing state is shown. The
+  // window receives key focus slightly after the state flips, so retry briefly
+  // in case the first focus() raced it.
+  useEffect(() => {
+    if (state !== "editing" || !isVisible) return;
+    const place = () => {
+      const el = editRef.current;
+      if (!el) return;
+      el.focus();
+      const caret = Math.min(editCaretRef.current, el.value.length);
+      el.setSelectionRange(caret, caret);
+    };
+    place();
+    const retries = [setTimeout(place, 80), setTimeout(place, 220)];
+    return () => retries.forEach(clearTimeout);
+  }, [state, isVisible]);
 
   // Elapsed capture timer starts only once microphone samples are flowing.
   useEffect(() => {
@@ -226,6 +322,69 @@ const RecordingOverlay: React.FC = () => {
       <div className="sbase-r">{showCancel && cancelBtn}</div>
     </div>
   );
+
+  // ---- Edit panel (edit-before-paste): the transcript becomes a real
+  // editor; Enter pastes it, Esc discards it, and the transcribe shortcut
+  // dictates more text into it at the caret. ----
+  if (state === "editing") {
+    const confirmEdit = () => {
+      if (editSubmitRef.current) return;
+      editSubmitRef.current = true;
+      editSessionRef.current = false;
+      commands.pasteEditedTranscript(editTextRef.current);
+    };
+
+    const dismissEdit = () => {
+      editSessionRef.current = false;
+      commands.dismissEditOverlay();
+    };
+
+    const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        confirmEdit();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        dismissEdit();
+      }
+    };
+
+    return (
+      <div dir={direction} className={`ov-stage ${position}`}>
+        <div className={`scard editing ${isVisible ? "" : "leaving"}`}>
+          <textarea
+            ref={editRef}
+            className="sedit"
+            value={editText}
+            aria-label={t("overlay.edit.ariaLabel")}
+            spellCheck={false}
+            onChange={(e) => {
+              editTextRef.current = e.target.value;
+              editCaretRef.current =
+                e.target.selectionStart ?? e.target.value.length;
+              setEditText(e.target.value);
+            }}
+            onSelect={(e) => {
+              editCaretRef.current =
+                e.currentTarget.selectionStart ?? editTextRef.current.length;
+            }}
+            onKeyDown={handleEditKeyDown}
+          />
+          <div className="sedit-bar">
+            <span className="sedit-hint">{t("overlay.edit.hint")}</span>
+            <div className="sedit-actions">
+              <button className="sedit-btn ghost" onClick={dismissEdit}>
+                {t("overlay.edit.discard")}
+              </button>
+              <button className="sedit-btn primary" onClick={confirmEdit}>
+                {t("overlay.edit.paste")}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // ---- Live overlay: a pill that sculpts open into a panel ----
   if (state === "streaming") {
