@@ -984,7 +984,7 @@ reliable_paste?: boolean; typing_tool?: TypingTool; external_script_path?: strin
  * not gated on this — that follows model capability. Migrated from the old
  * `overlay_position` (position `none` → style `None`).
  */
-overlay_style?: OverlayStyle;
+overlay_style?: OverlayStyle; 
 /**
  * Review/edit the transcript in the overlay before it is pasted.
  */
